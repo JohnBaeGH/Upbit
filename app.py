@@ -22,7 +22,7 @@ CORS(app)  # CORS 설정으로 브라우저 요청 허용
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
- 자동거래 상태 관리 (메모리에 저장)
+ #자동거래 상태 관리 (메모리에 저장)
 auto_trading_state = {
     "is_running": False,
     "config": {},
