@@ -359,7 +359,186 @@ def get_auto_trading_performance():
         "performance": auto_trading_state["performance"]
     })
 
+@app.route('/auto-trading')
+def auto_trading_page():
+    """자동거래 페이지"""
+    return '''
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🤖 업비트 자동거래</title>
+    <style>
+        body { 
+            font-family: Arial, sans-serif; 
+            margin: 0; 
+            padding: 40px; 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        .container { 
+            max-width: 800px; 
+            margin: 0 auto; 
+            background: white; 
+            padding: 30px; 
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .header h1 {
+            color: #4a5568;
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+        .btn { 
+            padding: 12px 24px; 
+            margin: 10px; 
+            border: none; 
+            border-radius: 8px; 
+            cursor: pointer; 
+            font-size: 16px;
+            transition: all 0.3s ease;
+        }
+        .start-btn { 
+            background: linear-gradient(45deg, #48bb78, #38a169); 
+            color: white; 
+        }
+        .stop-btn { 
+            background: linear-gradient(45deg, #e53e3e, #c53030); 
+            color: white; 
+        }
+        .btn:hover { transform: scale(1.05); }
+        .status { 
+            padding: 20px; 
+            margin: 20px 0; 
+            border-radius: 10px; 
+            text-align: center;
+            font-size: 1.2em;
+            font-weight: bold;
+        }
+        .stopped { 
+            background: #fed7d7; 
+            color: #721c24; 
+        }
+        .running { 
+            background: #c6f6d5; 
+            color: #22543d; 
+        }
+        .log { 
+            background: #2d3748; 
+            color: #e2e8f0;
+            padding: 20px; 
+            height: 200px; 
+            overflow-y: auto; 
+            border-radius: 10px; 
+            font-family: 'Courier New', monospace; 
+            font-size: 14px;
+        }
+        .back-link {
+            display: inline-block;
+            margin-top: 20px;
+            padding: 10px 20px;
+            background: #667eea;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 업비트 자동거래 시스템</h1>
+            <p>Railway 배포 버전</p>
+        </div>
+        
+        <div class="status stopped" id="status">
+            ⏹️ 상태: 중지됨
+        </div>
+        
+        <div style="text-align: center;">
+            <button class="btn start-btn" onclick="startTrading()">🚀 자동거래 시작 (시뮬레이션)</button>
+            <button class="btn stop-btn" onclick="stopTrading()">⏹️ 자동거래 중지</button>
+        </div>
+        
+        <h3>📋 거래 로그</h3>
+        <div class="log" id="log">
+[시스템] 자동거래 시스템 초기화 완료
+[알림] 현재 시뮬레이션 모드로 설정되어 있습니다
+        </div>
+        
+        <a href="/" class="back-link">← 메인 페이지로 돌아가기</a>
+    </div>
 
+    <script>
+        let isRunning = false;
+
+        function startTrading() {
+            if (!isRunning) {
+                isRunning = true;
+                
+                // UI 업데이트
+                const status = document.getElementById('status');
+                status.className = 'status running';
+                status.innerHTML = '🟢 상태: 실행 중 (시뮬레이션)';
+                
+                // 로그 추가
+                addLog('🚀 자동거래 시작 - 시뮬레이션 모드');
+                addLog('📊 BTC 데이터 분석 중...');
+                
+                // 시뮬레이션 로그 생성
+                setTimeout(() => {
+                    addLog('📈 매수 신호 감지: BTC @ 50,000,000 KRW');
+                }, 3000);
+                
+                setTimeout(() => {
+                    addLog('💰 시뮬레이션 매수 완료: 0.001 BTC');
+                }, 5000);
+            }
+        }
+
+        function stopTrading() {
+            if (isRunning) {
+                isRunning = false;
+                
+                // UI 업데이트
+                const status = document.getElementById('status');
+                status.className = 'status stopped';
+                status.innerHTML = '⏹️ 상태: 중지됨';
+                
+                // 로그 추가
+                addLog('⏹️ 자동거래 중지');
+            }
+        }
+
+        function addLog(message) {
+            const log = document.getElementById('log');
+            const time = new Date().toLocaleTimeString();
+            log.innerHTML += '\\n[' + time + '] ' + message;
+            log.scrollTop = log.scrollHeight;
+        }
+
+        // 5초마다 시뮬레이션 로그 추가
+        setInterval(() => {
+            if (isRunning) {
+                const messages = [
+                    '📊 시장 분석 중...',
+                    '💹 RSI 지표 확인: 45.2',
+                    '📈 이동평균선 분석 완료',
+                    '🔍 매매 기회 탐색 중...'
+                ];
+                const randomMessage = messages[Math.floor(Math.random() * messages.length)];
+                addLog(randomMessage);
+            }
+        }, 5000);
+    </script>
+</body>
+</html>
+    '''
 
 
 
