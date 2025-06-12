@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🚀 업비트 캔들 차트 웹 서비스</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+        .container { 
+            max-width: 1200px; 
+            margin: 0 auto; 
+            padding: 20px;
+        }
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 40px;
+        }
+        .header h1 {
+            font-size: 3em;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+        .header p {
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+        .api-section {
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            margin-bottom: 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+        }
+        .api-section h2 {
+            color: #2a5298;
+            margin-bottom: 20px;
+        }
+        .endpoint {
+            background: #f8f9fa;
+            border-left: 4px solid #2a5298;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 0 8px 8px 0;
+        }
+        .endpoint code {
+            background: #e9ecef;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+        }
+        .btn {
+            background: linear-gradient(45deg, #1e3c72, #2a5298);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px 5px;
+            transition: all 0.3s ease;
+        }
+        .btn:hover {
+            transform: scale(1.05);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+        }
+        .test-area {
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+        }
+        .result {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            padding: 20px;
+            margin-top: 20px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        pre {
+            background: #2d3748;
+            color: #e2e8f0;
+            padding: 15px;
+            border-radius: 8px;
+            overflow-x: auto;
+            font-size: 14px;
+        }
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #2a5298;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .input-group {
+            margin: 10px 0;
+        }
+        .input-group label {
+            display: inline-block;
+            width: 100px;
+            font-weight: bold;
+        }
+        .input-group input, .input-group select {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            margin-left: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🚀 업비트 캔들 차트 웹 서비스</h1>
+            <p>실시간 업비트 API 데이터를 제공하는 웹 서버</p>
+            <p>Railway 배포 버전</p>
+        </div>
+
+        <div class="api-section">
+            <h2>📋 API 엔드포인트</h2>
+            
+            <div class="endpoint">
+                <h4>🔍 API 상태 확인</h4>
+                <code>GET /api/status</code>
+                <p>서버 상태와 기본 정보를 확인합니다.</p>
+            </div>
+
+            <div class="endpoint">
+                <h4>📊 캔들 데이터 조회</h4>
+                <code>GET /api/candles?market=KRW-BTC&interval=5&count=50</code>
+                <p>지정된 마켓의 캔들 데이터를 조회합니다.</p>
+                <ul>
+                    <li><strong>market</strong>: 마켓 코드 (예: KRW-BTC)</li>
+                    <li><strong>interval</strong>: 캔들 간격 (1,3,5,15,10,30,60,240)</li>
+                    <li><strong>count</strong>: 조회할 캔들 개수 (1~200)</li>
+                </ul>
+            </div>
+
+            <div class="endpoint">
+                <h4>🏪 마켓 목록 조회</h4>
+                <code>GET /api/markets</code>
+                <p>업비트의 모든 KRW 마켓 목록을 조회합니다.</p>
+            </div>
+        </div>
+
+        <div class="test-area">
+            <h2>🧪 API 테스트</h2>
+            
+            <div class="input-group">
+                <label>마켓:</label>
+                <select id="market">
+                    <option value="KRW-BTC">KRW-BTC</option>
+                    <option value="KRW-ETH">KRW-ETH</option>
+                    <option value="KRW-XRP">KRW-XRP</option>
+                    <option value="KRW-ADA">KRW-ADA</option>
+                </select>
+            </div>
+
+            <div class="input-group">
+                <label>캔들 간격:</label>
+                <select id="interval">
+                    <option value="1">1분</option>
+                    <option value="3">3분</option>
+                    <option value="5" selected>5분</option>
+                    <option value="15">15분</option>
+                    <option value="30">30
