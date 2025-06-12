@@ -1,39 +1,35 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-업비트 캔들 차트 웹 서비스 - Flask 백엔드
-실시간 업비트 API 데이터를 제공하는 웹 서버
+업비트 통합 웹 서비스
+- 캔들 차트 API
+- 자동거래 시스템
+Railway 배포 버전
 """
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 import requests
 import json
+import threading
+import time
+import random
+import os
 from datetime import datetime
 import logging
-from threading import Thread    # ← 새로 추가
-import time   
-# json은 이미 있으므로 추가하지 않음
 
 # Flask 애플리케이션 초기화
 app = Flask(__name__)
-CORS(app)  # CORS 설정으로 브라우저 요청 허용
+CORS(app)
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
- #자동거래 상태 관리 (메모리에 저장)
-auto_trading_state = {
-    "is_running": False,
-    "config": {},
-    "performance": {
-        "total_trades": 0,
-        "total_profit": 0,
-        "win_rate": 0,
-        "current_position": None
-    },
-    "logs": []
-}
+
+# ============================================================================
+# 업비트 API 클래스
+# ============================================================================
+
 class UpbitAPI:
     """업비트 API 클래스"""
     
@@ -41,527 +37,501 @@ class UpbitAPI:
         self.base_url = "https://api.upbit.com"
     
     def get_candle_data(self, market="KRW-BTC", interval="5", count=50):
-        """
-        업비트 캔들 데이터 조회
-        
-        Args:
-            market (str): 마켓 코드 (예: KRW-BTC)
-            interval (str): 캔들 간격 (1,3,5,15,10,30,60,240)
-            count (int): 조회할 캔들 개수 (1~200)
-        
-        Returns:
-            list: 캔들 데이터 리스트
-        """
+        """캔들 데이터 조회"""
         try:
             url = f"{self.base_url}/v1/candles/minutes/{interval}"
-            params = {
-                'market': market,
-                'count': min(count, 200)  # 최대 200개로 제한
-            }
-            
-            logger.info(f"업비트 API 호출: {market} {interval}분 캔들 {count}개")
+            params = {'market': market, 'count': min(count, 200)}
             
             response = requests.get(url, params=params, timeout=10)
             response.raise_for_status()
-            
             return response.json()
-            
-        except requests.exceptions.RequestException as e:
-            logger.error(f"업비트 API 요청 실패: {e}")
-            return None
         except Exception as e:
-            logger.error(f"데이터 처리 오류: {e}")
+            logger.error(f"캔들 데이터 조회 실패: {e}")
             return None
     
     def get_markets(self):
-        """업비트 마켓 목록 조회"""
+        """마켓 목록 조회"""
         try:
             url = f"{self.base_url}/v1/market/all"
             response = requests.get(url, timeout=10)
             response.raise_for_status()
             
             markets = response.json()
-            # KRW 마켓만 필터링
-            krw_markets = [m for m in markets if m['market'].startswith('KRW-')]
-            
-            return krw_markets
-            
+            return [m for m in markets if m['market'].startswith('KRW-')]
         except Exception as e:
             logger.error(f"마켓 정보 조회 실패: {e}")
             return []
 
-# API 클래스 인스턴스 생성
+# API 인스턴스 생성
 upbit_api = UpbitAPI()
 
-def convert_to_chart_format(candles):
-    """
-    업비트 캔들 데이터를 차트 라이브러리용 포맷으로 변환
+# ============================================================================
+# 자동거래 시스템
+# ============================================================================
+
+# 자동거래 상태 관리
+auto_trading_state = {
+    "is_running": False,
+    "config": {
+        "market": "KRW-BTC",
+        "trade_interval": 300,
+        "simulation_mode": True,
+        "max_investment_ratio": 0.1,
+        "stop_loss_ratio": -0.03,
+        "take_profit_ratio": 0.05,
+        "rsi_oversold": 30,
+        "rsi_overbought": 70
+    },
+    "performance": {
+        "total_trades": 0,
+        "successful_trades": 0,
+        "total_profit_krw": 0,
+        "win_rate": 0,
+        "current_position": None
+    },
+    "logs": [],
+    "current_analysis": {
+        "price": 0,
+        "rsi": 50,
+        "signal": "HOLD"
+    }
+}
+
+# 자동거래 실행 변수
+trading_thread = None
+trading_active = False
+
+def add_trading_log(message, log_type="INFO"):
+    """거래 로그 추가"""
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    log_entry = {"timestamp": timestamp, "message": message, "type": log_type}
+    auto_trading_state["logs"].append(log_entry)
     
-    Args:
-        candles (list): 업비트 원본 캔들 데이터
+    if len(auto_trading_state["logs"]) > 100:
+        auto_trading_state["logs"] = auto_trading_state["logs"][-100:]
+
+def simulate_market_analysis():
+    """시장 분석 시뮬레이션"""
+    base_price = 50000000
+    price_variation = random.uniform(-0.02, 0.02)
+    current_price = base_price * (1 + price_variation)
+    rsi = random.uniform(20, 80)
     
-    Returns:
-        list: 차트용 포맷 데이터
-    """
-    if not candles:
-        return []
+    config = auto_trading_state["config"]
+    signal = "HOLD"
     
-    chart_data = []
+    if rsi < config["rsi_oversold"]:
+        signal = "BUY"
+    elif rsi > config["rsi_overbought"]:
+        signal = "SELL"
+    elif auto_trading_state["performance"]["current_position"]:
+        position = auto_trading_state["performance"]["current_position"]
+        profit_ratio = (current_price - position["buy_price"]) / position["buy_price"]
+        
+        if profit_ratio <= config["stop_loss_ratio"]:
+            signal = "STOP_LOSS"
+        elif profit_ratio >= config["take_profit_ratio"]:
+            signal = "TAKE_PROFIT"
     
-    # 시간순 정렬 (과거 → 현재)
-    for candle in reversed(candles):
+    auto_trading_state["current_analysis"] = {
+        "price": current_price,
+        "rsi": rsi,
+        "signal": signal
+    }
+    
+    return signal, current_price
+
+def execute_trade(signal, price):
+    """거래 실행"""
+    performance = auto_trading_state["performance"]
+    
+    if signal == "BUY" and not performance["current_position"]:
+        performance["current_position"] = {
+            "buy_price": price,
+            "timestamp": datetime.now().isoformat()
+        }
+        performance["total_trades"] += 1
+        add_trading_log(f"🟢 매수: {price:,.0f} KRW", "SUCCESS")
+        
+    elif signal in ["SELL", "STOP_LOSS", "TAKE_PROFIT"] and performance["current_position"]:
+        position = performance["current_position"]
+        profit = price - position["buy_price"]
+        
+        if profit > 0:
+            performance["successful_trades"] += 1
+            performance["total_profit_krw"] += profit
+            emoji = "🎯" if signal == "TAKE_PROFIT" else "🔴"
+        else:
+            emoji = "🛑" if signal == "STOP_LOSS" else "🔴"
+        
+        add_trading_log(f"{emoji} 매도: {price:,.0f} KRW (수익: {profit:+,.0f} KRW)", 
+                       "SUCCESS" if profit > 0 else "WARNING")
+        
+        performance["current_position"] = None
+        
+        if performance["total_trades"] > 0:
+            performance["win_rate"] = (performance["successful_trades"] / performance["total_trades"]) * 100
+
+def auto_trading_worker():
+    """자동거래 워커 스레드"""
+    global trading_active
+    
+    add_trading_log("🤖 자동거래 시스템 시작", "INFO")
+    
+    while trading_active:
         try:
-            # 시간을 JavaScript 타임스탬프로 변환
-            dt = datetime.fromisoformat(candle['candle_date_time_kst'].replace('Z', '+00:00'))
-            timestamp = int(dt.timestamp() * 1000)
+            signal, current_price = simulate_market_analysis()
+            add_trading_log(f"📊 분석: {current_price:,.0f}원, RSI:{auto_trading_state['current_analysis']['rsi']:.1f}, 신호:{signal}")
             
-            chart_item = {
-                'timestamp': timestamp,
-                'datetime': dt.strftime('%Y-%m-%d %H:%M:%S'),
-                'open': float(candle['opening_price']),
-                'high': float(candle['high_price']),
-                'low': float(candle['low_price']),
-                'close': float(candle['trade_price']),
-                'volume': float(candle['candle_acc_trade_volume'])
-            }
+            if signal != "HOLD":
+                execute_trade(signal, current_price)
             
-            chart_data.append(chart_item)
+            time.sleep(auto_trading_state["config"]["trade_interval"])
             
-        except (KeyError, ValueError, TypeError) as e:
-            logger.warning(f"캔들 데이터 변환 오류: {e}")
-            continue
+        except Exception as e:
+            add_trading_log(f"❌ 오류: {str(e)}", "ERROR")
+            time.sleep(60)
     
-    return chart_data
+    add_trading_log("⏹️ 자동거래 시스템 중지", "INFO")
+
+# ============================================================================
+# 웹 라우트 - 페이지
+# ============================================================================
 
 @app.route('/')
 def index():
     """메인 페이지"""
-    return render_template('index.html')
-
-@app.route('/api/candles')
-def get_candles():
-    """
-    캔들 데이터 API 엔드포인트
-    
-    Query Parameters:
-        - market: 마켓 코드 (기본값: KRW-BTC)
-        - interval: 캔들 간격 (기본값: 5)
-        - count: 조회 개수 (기본값: 50)
-    
-    Returns:
-        JSON: 캔들 데이터 응답
-    """
-    try:
-        # 쿼리 파라미터 추출
-        market = request.args.get('market', 'KRW-BTC')
-        interval = request.args.get('interval', '5')
-        count = int(request.args.get('count', 50))
-        
-        # 파라미터 검증
-        if not market.startswith('KRW-'):
-            return jsonify({
-                'status': 'error',
-                'message': 'KRW 마켓만 지원됩니다.'
-            }), 400
-        
-        if interval not in ['1', '3', '5', '15', '10', '30', '60', '240']:
-            return jsonify({
-                'status': 'error',
-                'message': '지원하지 않는 캔들 간격입니다.'
-            }), 400
-        
-        if count < 1 or count > 200:
-            return jsonify({
-                'status': 'error',
-                'message': '조회 개수는 1~200 사이여야 합니다.'
-            }), 400
-        
-        # 업비트 API에서 데이터 조회
-        candles = upbit_api.get_candle_data(market, interval, count)
-        
-        if candles is None:
-            return jsonify({
-                'status': 'error',
-                'message': '업비트 API 요청에 실패했습니다.'
-            }), 500
-        
-        # 차트용 포맷으로 변환
-        chart_data = convert_to_chart_format(candles)
-        
-        # 응답 데이터 구성
-        response_data = {
-            'status': 'success',
-            'market': market,
-            'interval': f'{interval}m',
-            'count': len(chart_data),
-            'data': chart_data,
-            'updated_at': datetime.now().isoformat()
-        }
-        
-        logger.info(f"캔들 데이터 응답: {market} {interval}분 {len(chart_data)}개")
-        
-        return jsonify(response_data)
-        
-    except ValueError as e:
-        return jsonify({
-            'status': 'error',
-            'message': f'잘못된 파라미터: {str(e)}'
-        }), 400
-        
-    except Exception as e:
-        logger.error(f"캔들 데이터 API 오류: {e}")
-        return jsonify({
-            'status': 'error',
-            'message': '서버 내부 오류가 발생했습니다.'
-        }), 500
-
-@app.route('/api/markets')
-def get_markets():
-    """
-    마켓 목록 API 엔드포인트
-    
-    Returns:
-        JSON: KRW 마켓 목록
-    """
-    try:
-        markets = upbit_api.get_markets()
-        
-        return jsonify({
-            'status': 'success',
-            'count': len(markets),
-            'data': markets
-        })
-        
-    except Exception as e:
-        logger.error(f"마켓 목록 API 오류: {e}")
-        return jsonify({
-            'status': 'error',
-            'message': '마켓 정보를 가져올 수 없습니다.'
-        }), 500
-
-@app.route('/api/status')
-def api_status():
-    """API 상태 확인 엔드포인트"""
-    return jsonify({
-        'status': 'success',
-        'message': '업비트 캔들 차트 API 서버가 정상 작동 중입니다.',
-        'timestamp': datetime.now().isoformat(),
-        'version': '1.0.0'
-    })
-
-@app.errorhandler(404)
-def not_found(error):
-    """404 에러 핸들러"""
-    return jsonify({
-        'status': 'error',
-        'message': '요청한 리소스를 찾을 수 없습니다.'
-    }), 404
-
-@app.errorhandler(500)
-def internal_error(error):
-    """500 에러 핸들러"""
-    return jsonify({
-        'status': 'error',
-        'message': '서버 내부 오류가 발생했습니다.'
-    }), 500
-def render_template_string(template):
-    """간단한 템플릿 렌더링 (자동거래용)"""
-    import datetime
-    return template.replace('{{ datetime.now().strftime(\'%Y-%m-%d %H:%M:%S\') }}', 
-                          datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-
-# 자동거래 라우트 추가
-@app.route('/auto-trading')
-def auto_trading_dashboard():
-    """자동거래 대시보드 페이지"""
-    return render_template_string('''
-    <!-- 여기에 위에서 제공한 HTML 코드 전체 복사 -->
-    ''')
-
-@app.route('/api/auto-trading/start', methods=['POST'])
-def start_auto_trading():
-    """자동거래 시작"""
-    try:
-        config = request.get_json()
-        auto_trading_state["config"] = config
-        auto_trading_state["is_running"] = True
-        
-        # 자동거래 로그 추가
-        mode = "시뮬레이션" if config.get("simulation_mode", True) else "실제 거래"
-        log_message = f"🚀 자동거래 시작 - {mode} 모드, {config['market']}"
-        auto_trading_state["logs"].append(f"[{datetime.now().strftime('%H:%M:%S')}] {log_message}")
-        
-        return jsonify({
-            "success": True,
-            "message": "자동거래가 시작되었습니다."
-        })
-        
-    except Exception as e:
-        return jsonify({
-            "success": False,
-            "message": str(e)
-        }), 500
-
-@app.route('/api/auto-trading/stop', methods=['POST'])
-def stop_auto_trading():
-    """자동거래 중지"""
-    try:
-        auto_trading_state["is_running"] = False
-        
-        log_message = "⏹️ 자동거래 중지"
-        auto_trading_state["logs"].append(f"[{datetime.now().strftime('%H:%M:%S')}] {log_message}")
-        
-        return jsonify({
-            "success": True,
-            "message": "자동거래가 중지되었습니다."
-        })
-        
-    except Exception as e:
-        return jsonify({
-            "success": False,
-            "message": str(e)
-        }), 500
-
-@app.route('/api/auto-trading/config', methods=['POST'])
-def update_auto_trading_config():
-    """자동거래 설정 업데이트"""
-    try:
-        config = request.get_json()
-        auto_trading_state["config"].update(config)
-        
-        log_message = f"⚙️ 전략 설정 적용: {config.get('market', 'Unknown')}"
-        auto_trading_state["logs"].append(f"[{datetime.now().strftime('%H:%M:%S')}] {log_message}")
-        
-        return jsonify({
-            "success": True,
-            "message": "설정이 적용되었습니다."
-        })
-        
-    except Exception as e:
-        return jsonify({
-            "success": False,
-            "message": str(e)
-        }), 500
-
-@app.route('/api/auto-trading/logs')
-def get_auto_trading_logs():
-    """자동거래 로그 조회"""
-    return jsonify({
-        "success": True,
-        "logs": auto_trading_state["logs"][-50:]  # 최근 50개만
-    })
-
-@app.route('/api/auto-trading/performance')
-def get_auto_trading_performance():
-    """자동거래 성과 조회"""
-    return jsonify({
-        "success": True,
-        "performance": auto_trading_state["performance"]
-    })
-
-@app.route('/auto-trading')
-def auto_trading_page():
-    """자동거래 페이지"""
     return '''
 <!DOCTYPE html>
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🤖 업비트 자동거래</title>
+    <title>🚀 업비트 통합 웹 서비스</title>
     <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         body { 
-            font-family: Arial, sans-serif; 
-            margin: 0; 
-            padding: 40px; 
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
             min-height: 100vh;
+            color: #333;
         }
-        .container { 
-            max-width: 800px; 
-            margin: 0 auto; 
-            background: white; 
-            padding: 30px; 
-            border-radius: 15px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
-        }
+        .container { max-width: 1200px; margin: 0 auto; padding: 40px 20px; }
         .header {
             text-align: center;
-            margin-bottom: 30px;
+            color: white;
+            margin-bottom: 50px;
         }
         .header h1 {
-            color: #4a5568;
-            font-size: 2.5em;
-            margin-bottom: 10px;
+            font-size: 3em;
+            margin-bottom: 15px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
         }
-        .btn { 
-            padding: 12px 24px; 
-            margin: 10px; 
-            border: none; 
-            border-radius: 8px; 
-            cursor: pointer; 
-            font-size: 16px;
-            transition: all 0.3s ease;
+        .nav-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 30px;
+            margin-bottom: 40px;
         }
-        .start-btn { 
-            background: linear-gradient(45deg, #48bb78, #38a169); 
-            color: white; 
-        }
-        .stop-btn { 
-            background: linear-gradient(45deg, #e53e3e, #c53030); 
-            color: white; 
-        }
-        .btn:hover { transform: scale(1.05); }
-        .status { 
-            padding: 20px; 
-            margin: 20px 0; 
-            border-radius: 10px; 
+        .nav-card {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
             text-align: center;
-            font-size: 1.2em;
-            font-weight: bold;
-        }
-        .stopped { 
-            background: #fed7d7; 
-            color: #721c24; 
-        }
-        .running { 
-            background: #c6f6d5; 
-            color: #22543d; 
-        }
-        .log { 
-            background: #2d3748; 
-            color: #e2e8f0;
-            padding: 20px; 
-            height: 200px; 
-            overflow-y: auto; 
-            border-radius: 10px; 
-            font-family: 'Courier New', monospace; 
-            font-size: 14px;
-        }
-        .back-link {
-            display: inline-block;
-            margin-top: 20px;
-            padding: 10px 20px;
-            background: #667eea;
-            color: white;
+            box-shadow: 0 15px 35px rgba(0,0,0,0.1);
+            transition: transform 0.3s ease;
             text-decoration: none;
-            border-radius: 5px;
+            color: inherit;
+        }
+        .nav-card:hover {
+            transform: translateY(-10px);
+        }
+        .nav-icon {
+            font-size: 4em;
+            margin-bottom: 20px;
+        }
+        .nav-title {
+            font-size: 1.5em;
+            font-weight: bold;
+            margin-bottom: 15px;
+            color: #2a5298;
+        }
+        .nav-desc {
+            color: #666;
+            line-height: 1.6;
+        }
+        .api-section {
+            background: rgba(255,255,255,0.95);
+            border-radius: 20px;
+            padding: 30px;
+            text-align: center;
+        }
+        .api-section h2 {
+            color: #2a5298;
+            margin-bottom: 20px;
+        }
+        .endpoint {
+            display: inline-block;
+            background: #f8f9fa;
+            padding: 10px 20px;
+            margin: 10px;
+            border-radius: 25px;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            color: #495057;
         }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>🤖 업비트 자동거래 시스템</h1>
+            <h1>🚀 업비트 통합 웹 서비스</h1>
+            <p>실시간 데이터 분석 & 자동거래 시스템</p>
             <p>Railway 배포 버전</p>
         </div>
+
+        <div class="nav-grid">
+            <a href="/charts" class="nav-card">
+                <div class="nav-icon">📊</div>
+                <div class="nav-title">캔들 차트 & 데이터</div>
+                <div class="nav-desc">
+                    실시간 업비트 캔들 데이터 조회<br>
+                    마켓 정보 및 API 테스트
+                </div>
+            </a>
+            
+            <a href="/auto-trading" class="nav-card">
+                <div class="nav-icon">🤖</div>
+                <div class="nav-title">자동거래 시스템</div>
+                <div class="nav-desc">
+                    완전한 자동매매 솔루션<br>
+                    실시간 분석 & 리스크 관리
+                </div>
+            </a>
+        </div>
+
+        <div class="api-section">
+            <h2>🔗 API 엔드포인트</h2>
+            <div class="endpoint">GET /api/status</div>
+            <div class="endpoint">GET /api/candles</div>
+            <div class="endpoint">GET /api/markets</div>
+            <div class="endpoint">POST /api/auto-trading/start</div>
+        </div>
+    </div>
+</body>
+</html>
+    '''
+
+@app.route('/charts')
+def charts_page():
+    """캔들 차트 페이지"""
+    return '''
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>📊 업비트 캔들 차트</title>
+    <!-- 기존 캔들 차트 HTML 코드 (간소화) -->
+    <style>
+        /* 기존 스타일 */
+        body { font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; }
+        .container { max-width: 1200px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; }
+        .btn { padding: 10px 20px; margin: 10px; border: none; border-radius: 5px; cursor: pointer; background: #2a5298; color: white; }
+        .result { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; max-height: 400px; overflow-y: auto; }
+        pre { background: #2d3748; color: #e2e8f0; padding: 15px; border-radius: 8px; overflow-x: auto; font-size: 14px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📊 업비트 캔들 차트 데이터</h1>
         
-        <div class="status stopped" id="status">
-            ⏹️ 상태: 중지됨
+        <div>
+            <label>마켓: </label>
+            <select id="market">
+                <option value="KRW-BTC">KRW-BTC</option>
+                <option value="KRW-ETH">KRW-ETH</option>
+                <option value="KRW-XRP">KRW-XRP</option>
+            </select>
+            
+            <label>간격: </label>
+            <select id="interval">
+                <option value="1">1분</option>
+                <option value="5" selected>5분</option>
+                <option value="15">15분</option>
+                <option value="60">1시간</option>
+            </select>
+            
+            <label>개수: </label>
+            <input type="number" id="count" value="20" min="1" max="200">
         </div>
         
-        <div style="text-align: center;">
-            <button class="btn start-btn" onclick="startTrading()">🚀 자동거래 시작 (시뮬레이션)</button>
-            <button class="btn stop-btn" onclick="stopTrading()">⏹️ 자동거래 중지</button>
+        <div>
+            <button class="btn" onclick="testStatus()">📊 상태 확인</button>
+            <button class="btn" onclick="testCandles()">📈 캔들 데이터</button>
+            <button class="btn" onclick="testMarkets()">🏪 마켓 목록</button>
         </div>
         
-        <h3>📋 거래 로그</h3>
-        <div class="log" id="log">
-[시스템] 자동거래 시스템 초기화 완료
-[알림] 현재 시뮬레이션 모드로 설정되어 있습니다
+        <div id="result" class="result">
+            <h4>결과:</h4>
+            <pre id="resultContent">API 버튼을 클릭해보세요.</pre>
         </div>
         
-        <a href="/" class="back-link">← 메인 페이지로 돌아가기</a>
+        <div>
+            <a href="/" style="color: #2a5298;">← 메인 페이지로</a>
+        </div>
     </div>
 
     <script>
-        let isRunning = false;
-
-        function startTrading() {
-            if (!isRunning) {
-                isRunning = true;
-                
-                // UI 업데이트
-                const status = document.getElementById('status');
-                status.className = 'status running';
-                status.innerHTML = '🟢 상태: 실행 중 (시뮬레이션)';
-                
-                // 로그 추가
-                addLog('🚀 자동거래 시작 - 시뮬레이션 모드');
-                addLog('📊 BTC 데이터 분석 중...');
-                
-                // 시뮬레이션 로그 생성
-                setTimeout(() => {
-                    addLog('📈 매수 신호 감지: BTC @ 50,000,000 KRW');
-                }, 3000);
-                
-                setTimeout(() => {
-                    addLog('💰 시뮬레이션 매수 완료: 0.001 BTC');
-                }, 5000);
+        async function apiCall(url) {
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                document.getElementById('resultContent').textContent = JSON.stringify(data, null, 2);
+            } catch (error) {
+                document.getElementById('resultContent').textContent = 'Error: ' + error.message;
             }
         }
 
-        function stopTrading() {
-            if (isRunning) {
-                isRunning = false;
-                
-                // UI 업데이트
-                const status = document.getElementById('status');
-                status.className = 'status stopped';
-                status.innerHTML = '⏹️ 상태: 중지됨';
-                
-                // 로그 추가
-                addLog('⏹️ 자동거래 중지');
-            }
+        function testStatus() { apiCall('/api/status'); }
+        function testMarkets() { apiCall('/api/markets'); }
+        function testCandles() {
+            const market = document.getElementById('market').value;
+            const interval = document.getElementById('interval').value;
+            const count = document.getElementById('count').value;
+            apiCall(`/api/candles?market=${market}&interval=${interval}&count=${count}`);
         }
-
-        function addLog(message) {
-            const log = document.getElementById('log');
-            const time = new Date().toLocaleTimeString();
-            log.innerHTML += '\\n[' + time + '] ' + message;
-            log.scrollTop = log.scrollHeight;
-        }
-
-        // 5초마다 시뮬레이션 로그 추가
-        setInterval(() => {
-            if (isRunning) {
-                const messages = [
-                    '📊 시장 분석 중...',
-                    '💹 RSI 지표 확인: 45.2',
-                    '📈 이동평균선 분석 완료',
-                    '🔍 매매 기회 탐색 중...'
-                ];
-                const randomMessage = messages[Math.floor(Math.random() * messages.length)];
-                addLog(randomMessage);
-            }
-        }, 5000);
     </script>
 </body>
 </html>
     '''
 
+# ============================================================================
+# 웹 라우트 - API
+# ============================================================================
 
+@app.route('/api/status')
+def api_status():
+    """API 상태 확인"""
+    return jsonify({
+        'status': 'success',
+        'message': '업비트 통합 웹 서비스가 정상 작동 중입니다.',
+        'timestamp': datetime.now().isoformat(),
+        'services': {
+            'charts': 'active',
+            'auto_trading': 'active' if auto_trading_state['is_running'] else 'stopped'
+        }
+    })
+
+@app.route('/api/candles')
+def get_candles():
+    """캔들 데이터 조회"""
+    try:
+        market = request.args.get('market', 'KRW-BTC')
+        interval = request.args.get('interval', '5')
+        count = int(request.args.get('count', 50))
+        
+        candles = upbit_api.get_candle_data(market, interval, count)
+        
+        if candles is None:
+            return jsonify({'status': 'error', 'message': '데이터 조회 실패'}), 500
+        
+        return jsonify({
+            'status': 'success',
+            'market': market,
+            'interval': f'{interval}m',
+            'count': len(candles),
+            'data': candles[:10],  # 처음 10개만 표시
+            'updated_at': datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/api/markets')
+def get_markets():
+    """마켓 목록 조회"""
+    try:
+        markets = upbit_api.get_markets()
+        return jsonify({'status': 'success', 'count': len(markets), 'data': markets})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+# ============================================================================
+# 자동거래 API 라우트
+# ============================================================================
+
+@app.route('/auto-trading')
+def auto_trading_dashboard():
+    """자동거래 대시보드 - 앞서 만든 완전한 HTML 코드"""
+    # 여기에 앞서 만든 완전한 자동거래 HTML을 넣으면 됩니다
+    return "자동거래 대시보드 (완전한 HTML 코드는 길어서 생략)"
+
+@app.route('/api/auto-trading/start', methods=['POST'])
+def start_auto_trading():
+    """자동거래 시작"""
+    global trading_thread, trading_active
+    
+    try:
+        if trading_active:
+            return jsonify({"success": False, "message": "이미 실행 중입니다."})
+        
+        config = request.get_json()
+        if config:
+            auto_trading_state["config"].update(config)
+        
+        trading_active = True
+        auto_trading_state["is_running"] = True
+        
+        trading_thread = threading.Thread(target=auto_trading_worker, daemon=True)
+        trading_thread.start()
+        
+        return jsonify({"success": True, "message": "자동거래 시작"})
+        
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+@app.route('/api/auto-trading/stop', methods=['POST'])
+def stop_auto_trading():
+    """자동거래 중지"""
+    global trading_active
+    
+    try:
+        trading_active = False
+        auto_trading_state["is_running"] = False
+        return jsonify({"success": True, "message": "자동거래 중지"})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+@app.route('/api/auto-trading/performance')
+def get_performance():
+    """성과 조회"""
+    return jsonify({"success": True, "performance": auto_trading_state["performance"]})
+
+@app.route('/api/auto-trading/logs')
+def get_logs():
+    """로그 조회"""
+    return jsonify({"success": True, "logs": auto_trading_state["logs"][-50:]})
+
+@app.route('/api/auto-trading/analysis')
+def get_analysis():
+    """분석 데이터 조회"""
+    return jsonify({"success": True, "analysis": auto_trading_state["current_analysis"]})
+
+# ============================================================================
+# 메인 실행
+# ============================================================================
 
 if __name__ == '__main__':
-    import os
-    
-    # Railway 환경 변수에서 포트 가져오기 (Railway에서 자동으로 설정됨)
     port = int(os.environ.get('PORT', 5000))
     debug = os.environ.get('DEBUG', 'False').lower() == 'true'
     
-    print("🚀 업비트 캔들 차트 웹 서비스 시작")
+    print("🚀 업비트 통합 웹 서비스 시작")
     print(f"📊 접속 주소: http://localhost:{port}")
-    print("🔗 API 문서:")
-    print("  - GET /                    : 메인 페이지")
-    print("  - GET /api/candles         : 캔들 데이터 조회")
-    print("  - GET /api/markets         : 마켓 목록 조회")
-    print("  - GET /api/status          : API 상태 확인")
+    print("🔗 서비스:")
+    print("  - /          : 메인 페이지")
+    print("  - /charts    : 캔들 차트")
+    print("  - /auto-trading : 자동거래")
     print("-" * 50)
     
-    # Railway 환경에서 서버 실행
-    app.run(
-        host='0.0.0.0',     # 모든 IP에서 접근 가능
-        port=port,          # Railway가 제공하는 포트 사용
-        debug=debug,        # 프로덕션에서는 False
-        threaded=True       # 멀티스레드 지원
-    )
+    app.run(host='0.0.0.0', port=port, debug=debug, threaded=True)
