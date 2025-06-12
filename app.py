@@ -11,6 +11,9 @@ import requests
 import json
 from datetime import datetime
 import logging
+from threading import Thread    # ← 새로 추가
+import time   
+# json은 이미 있으므로 추가하지 않음
 
 # Flask 애플리케이션 초기화
 app = Flask(__name__)
@@ -19,7 +22,18 @@ CORS(app)  # CORS 설정으로 브라우저 요청 허용
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
+ 자동거래 상태 관리 (메모리에 저장)
+auto_trading_state = {
+    "is_running": False,
+    "config": {},
+    "performance": {
+        "total_trades": 0,
+        "total_profit": 0,
+        "win_rate": 0,
+        "current_position": None
+    },
+    "logs": []
+}
 class UpbitAPI:
     """업비트 API 클래스"""
     
@@ -250,6 +264,105 @@ def internal_error(error):
         'status': 'error',
         'message': '서버 내부 오류가 발생했습니다.'
     }), 500
+def render_template_string(template):
+    """간단한 템플릿 렌더링 (자동거래용)"""
+    import datetime
+    return template.replace('{{ datetime.now().strftime(\'%Y-%m-%d %H:%M:%S\') }}', 
+                          datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+
+# 자동거래 라우트 추가
+@app.route('/auto-trading')
+def auto_trading_dashboard():
+    """자동거래 대시보드 페이지"""
+    return render_template_string('''
+    <!-- 여기에 위에서 제공한 HTML 코드 전체 복사 -->
+    ''')
+
+@app.route('/api/auto-trading/start', methods=['POST'])
+def start_auto_trading():
+    """자동거래 시작"""
+    try:
+        config = request.get_json()
+        auto_trading_state["config"] = config
+        auto_trading_state["is_running"] = True
+        
+        # 자동거래 로그 추가
+        mode = "시뮬레이션" if config.get("simulation_mode", True) else "실제 거래"
+        log_message = f"🚀 자동거래 시작 - {mode} 모드, {config['market']}"
+        auto_trading_state["logs"].append(f"[{datetime.now().strftime('%H:%M:%S')}] {log_message}")
+        
+        return jsonify({
+            "success": True,
+            "message": "자동거래가 시작되었습니다."
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        }), 500
+
+@app.route('/api/auto-trading/stop', methods=['POST'])
+def stop_auto_trading():
+    """자동거래 중지"""
+    try:
+        auto_trading_state["is_running"] = False
+        
+        log_message = "⏹️ 자동거래 중지"
+        auto_trading_state["logs"].append(f"[{datetime.now().strftime('%H:%M:%S')}] {log_message}")
+        
+        return jsonify({
+            "success": True,
+            "message": "자동거래가 중지되었습니다."
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        }), 500
+
+@app.route('/api/auto-trading/config', methods=['POST'])
+def update_auto_trading_config():
+    """자동거래 설정 업데이트"""
+    try:
+        config = request.get_json()
+        auto_trading_state["config"].update(config)
+        
+        log_message = f"⚙️ 전략 설정 적용: {config.get('market', 'Unknown')}"
+        auto_trading_state["logs"].append(f"[{datetime.now().strftime('%H:%M:%S')}] {log_message}")
+        
+        return jsonify({
+            "success": True,
+            "message": "설정이 적용되었습니다."
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        }), 500
+
+@app.route('/api/auto-trading/logs')
+def get_auto_trading_logs():
+    """자동거래 로그 조회"""
+    return jsonify({
+        "success": True,
+        "logs": auto_trading_state["logs"][-50:]  # 최근 50개만
+    })
+
+@app.route('/api/auto-trading/performance')
+def get_auto_trading_performance():
+    """자동거래 성과 조회"""
+    return jsonify({
+        "success": True,
+        "performance": auto_trading_state["performance"]
+    })
+
+
+
+
+
 if __name__ == '__main__':
     import os
     
