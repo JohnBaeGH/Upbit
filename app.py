@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-업비트 통합 웹 서비스 v2.0
-- 캔들 차트 API 서비스
-- 완전한 자동거래 시스템
+업비트 자동거래 웹 서비스 v2.0
+- 완전한 자동거래 시스템 (실제 주문 지원)
 Railway 배포 최적화 버전
 """
 
@@ -15,7 +14,11 @@ import threading
 import time
 import random
 import os
+import jwt
+import uuid
+import hashlib
 from datetime import datetime
+from urllib.parse import urlencode
 import logging
 
 # ============================================================================
@@ -30,47 +33,148 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ============================================================================
-# 업비트 API 서비스
+# 업비트 실제 거래 API 클래스
 # ============================================================================
 
-class UpbitAPI:
-    """업비트 API 클래스"""
+class UpbitRealAPI:
+    """업비트 실제 거래 API 클래스"""
     
     def __init__(self):
         self.base_url = "https://api.upbit.com"
+        self.access_key = os.environ.get('UPBIT_OPEN_API_ACCESS_KEY')
+        self.secret_key = os.environ.get('UPBIT_OPEN_API_SECRET_KEY')
     
-    def get_candle_data(self, market="KRW-BTC", interval="5", count=50):
-        """캔들 데이터 조회"""
-        try:
-            url = f"{self.base_url}/v1/candles/minutes/{interval}"
-            params = {'market': market, 'count': min(count, 200)}
+    def is_authenticated(self):
+        """API 키가 설정되어 있는지 확인"""
+        return bool(self.access_key and self.secret_key)
+    
+    def generate_jwt_token(self, query=None):
+        """JWT 토큰 생성"""
+        if not self.is_authenticated():
+            return None
+        
+        payload = {
+            'access_key': self.access_key,
+            'nonce': str(uuid.uuid4()),
+        }
+        
+        if query:
+            query_string = urlencode(query).encode()
+            m = hashlib.sha512()
+            m.update(query_string)
+            query_hash = m.hexdigest()
             
-            logger.info(f"업비트 API 호출: {market} {interval}분 캔들 {count}개")
+            payload['query_hash'] = query_hash
+            payload['query_hash_alg'] = 'SHA512'
+        
+        jwt_token = jwt.encode(payload, self.secret_key, algorithm='HS256')
+        return f'Bearer {jwt_token}'
+    
+    def get_current_price(self, market):
+        """현재 시장 가격 조회"""
+        try:
+            url = f"{self.base_url}/v1/ticker"
+            params = {'markets': market}
+            
             response = requests.get(url, params=params, timeout=10)
             response.raise_for_status()
-            return response.json()
+            
+            ticker_data = response.json()
+            if ticker_data:
+                return ticker_data[0]['trade_price']
+            return None
             
         except Exception as e:
-            logger.error(f"캔들 데이터 조회 실패: {e}")
+            logger.error(f"현재 가격 조회 실패: {e}")
             return None
     
-    def get_markets(self):
-        """마켓 목록 조회"""
+    def get_account_balance(self, currency='KRW'):
+        """계좌 잔고 조회"""
+        if not self.is_authenticated():
+            return None
+        
         try:
-            url = f"{self.base_url}/v1/market/all"
-            response = requests.get(url, timeout=10)
+            authorization_token = self.generate_jwt_token()
+            headers = {"Authorization": authorization_token}
+            
+            response = requests.get(f"{self.base_url}/v1/accounts", headers=headers)
             response.raise_for_status()
             
-            markets = response.json()
-            krw_markets = [m for m in markets if m['market'].startswith('KRW-')]
-            return krw_markets
+            accounts = response.json()
+            for account in accounts:
+                if account['currency'] == currency:
+                    return float(account['balance'])
+            
+            return 0.0
             
         except Exception as e:
-            logger.error(f"마켓 정보 조회 실패: {e}")
-            return []
+            logger.error(f"계좌 잔고 조회 실패: {e}")
+            return None
+    
+    def place_market_buy_order(self, market, price):
+        """시장가 매수 주문"""
+        if not self.is_authenticated():
+            return None
+        
+        try:
+            query = {
+                'market': market,
+                'side': 'bid',
+                'ord_type': 'price',
+                'price': str(price),
+            }
+            
+            authorization_token = self.generate_jwt_token(query)
+            headers = {
+                "Authorization": authorization_token,
+                "Content-Type": "application/json"
+            }
+            
+            response = requests.post(f"{self.base_url}/v1/orders", params=query, headers=headers)
+            
+            if response.status_code == 201:
+                return response.json()
+            else:
+                logger.error(f"매수 주문 실패: {response.status_code} - {response.text}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"매수 주문 오류: {e}")
+            return None
+    
+    def place_market_sell_order(self, market, volume):
+        """시장가 매도 주문"""
+        if not self.is_authenticated():
+            return None
+        
+        try:
+            query = {
+                'market': market,
+                'side': 'ask',
+                'ord_type': 'market',
+                'volume': str(volume),
+            }
+            
+            authorization_token = self.generate_jwt_token(query)
+            headers = {
+                "Authorization": authorization_token,
+                "Content-Type": "application/json"
+            }
+            
+            response = requests.post(f"{self.base_url}/v1/orders", params=query, headers=headers)
+            
+            if response.status_code == 201:
+                return response.json()
+            else:
+                logger.error(f"매도 주문 실패: {response.status_code} - {response.text}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"매도 주문 오류: {e}")
+            return None
 
 # API 인스턴스 생성
-upbit_api = UpbitAPI()
+upbit_real_api = UpbitRealAPI()
 
 # ============================================================================
 # 자동거래 시스템
@@ -94,9 +198,9 @@ auto_trading_state = {
     },
     "performance": {
         "total_trades": 0,
-        "successful_trades": 0,
+        "total_investment": 0,
         "total_profit_krw": 0,
-        "win_rate": 0,
+        "profit_rate": 0,  # 투자 대비 이익률
         "current_position": None
     },
     "logs": [],
@@ -125,13 +229,14 @@ def add_trading_log(message, log_type="INFO"):
         auto_trading_state["logs"] = auto_trading_state["logs"][-100:]
 
 def simulate_market_analysis():
-    """시장 분석 시뮬레이션"""
+    """시장 분석 (실제 가격 + 시뮬레이션 지표)"""
     config = auto_trading_state["config"]
     
-    # 가상 시장 데이터 생성
-    base_price = 50000000
-    price_variation = random.uniform(-0.02, 0.02)
-    current_price = base_price * (1 + price_variation)
+    # 실제 가격 가져오기
+    current_price = upbit_real_api.get_current_price(config["market"])
+    if not current_price:
+        # 실제 가격을 못 가져오면 시뮬레이션 가격 사용
+        current_price = 50000000 * (1 + random.uniform(-0.02, 0.02))
     
     # 기술적 지표 시뮬레이션
     rsi = random.uniform(20, 80)
@@ -168,41 +273,81 @@ def simulate_market_analysis():
     return signal, current_price
 
 def execute_trade(signal, price):
-    """거래 실행"""
+    """거래 실행 (시뮬레이션 + 실제)"""
+    config = auto_trading_state["config"]
     performance = auto_trading_state["performance"]
     
     if signal == "BUY" and not performance["current_position"]:
         # 매수 실행
-        performance["current_position"] = {
-            "buy_price": price,
-            "amount": auto_trading_state["config"]["min_order_amount"] / price,
-            "timestamp": datetime.now().isoformat()
-        }
-        performance["total_trades"] += 1
-        add_trading_log(f"🟢 시뮬레이션 매수: {price:,.0f} KRW", "SUCCESS")
+        order_amount = config["min_order_amount"]
+        
+        if config["simulation_mode"]:
+            # 시뮬레이션 매수
+            performance["current_position"] = {
+                "buy_price": price,
+                "amount": order_amount / price,
+                "timestamp": datetime.now().isoformat(),
+                "investment": order_amount
+            }
+            performance["total_trades"] += 1
+            performance["total_investment"] += order_amount
+            add_trading_log(f"🟢 시뮬레이션 매수: {price:,.0f} KRW (투자: {order_amount:,}원)", "SUCCESS")
+        else:
+            # 실제 매수
+            if upbit_real_api.is_authenticated():
+                order_result = upbit_real_api.place_market_buy_order(config["market"], order_amount)
+                if order_result:
+                    performance["current_position"] = {
+                        "buy_price": price,
+                        "amount": order_amount / price,
+                        "timestamp": datetime.now().isoformat(),
+                        "investment": order_amount,
+                        "order_id": order_result.get('uuid')
+                    }
+                    performance["total_trades"] += 1
+                    performance["total_investment"] += order_amount
+                    add_trading_log(f"🟢 실제 매수 완료: {price:,.0f} KRW (투자: {order_amount:,}원)", "SUCCESS")
+                else:
+                    add_trading_log(f"❌ 실제 매수 실패: {price:,.0f} KRW", "ERROR")
+            else:
+                add_trading_log("❌ API 키가 설정되지 않았습니다", "ERROR")
         
     elif signal in ["SELL", "STOP_LOSS", "TAKE_PROFIT"] and performance["current_position"]:
         # 매도 실행
         position = performance["current_position"]
         profit = (price - position["buy_price"]) * position["amount"]
-        profit_ratio = (price - position["buy_price"]) / position["buy_price"] * 100
         
-        performance["total_profit_krw"] += profit
-        
-        if profit > 0:
-            performance["successful_trades"] += 1
-            emoji = "🎯" if signal == "TAKE_PROFIT" else "🔴"
+        if config["simulation_mode"]:
+            # 시뮬레이션 매도
+            performance["total_profit_krw"] += profit
+            
+            # 투자 대비 이익률 계산
+            if performance["total_investment"] > 0:
+                performance["profit_rate"] = (performance["total_profit_krw"] / performance["total_investment"]) * 100
+            
+            emoji = "🎯" if signal == "TAKE_PROFIT" else "🛑" if signal == "STOP_LOSS" else "🔴"
+            add_trading_log(f"{emoji} 시뮬레이션 매도: {price:,.0f} KRW (수익: {profit:+,.0f} KRW)", 
+                           "SUCCESS" if profit > 0 else "WARNING")
         else:
-            emoji = "🛑" if signal == "STOP_LOSS" else "🔴"
-        
-        add_trading_log(f"{emoji} 시뮬레이션 매도: {price:,.0f} KRW (수익: {profit:+,.0f} KRW, {profit_ratio:+.2f}%)", 
-                       "SUCCESS" if profit > 0 else "WARNING")
+            # 실제 매도
+            if upbit_real_api.is_authenticated():
+                order_result = upbit_real_api.place_market_sell_order(config["market"], position["amount"])
+                if order_result:
+                    performance["total_profit_krw"] += profit
+                    
+                    # 투자 대비 이익률 계산
+                    if performance["total_investment"] > 0:
+                        performance["profit_rate"] = (performance["total_profit_krw"] / performance["total_investment"]) * 100
+                    
+                    emoji = "🎯" if signal == "TAKE_PROFIT" else "🛑" if signal == "STOP_LOSS" else "🔴"
+                    add_trading_log(f"{emoji} 실제 매도 완료: {price:,.0f} KRW (수익: {profit:+,.0f} KRW)", 
+                                   "SUCCESS" if profit > 0 else "WARNING")
+                else:
+                    add_trading_log(f"❌ 실제 매도 실패: {price:,.0f} KRW", "ERROR")
+            else:
+                add_trading_log("❌ API 키가 설정되지 않았습니다", "ERROR")
         
         performance["current_position"] = None
-        
-        # 승률 계산
-        if performance["total_trades"] > 0:
-            performance["win_rate"] = (performance["successful_trades"] / performance["total_trades"]) * 100
 
 def auto_trading_worker():
     """자동거래 워커 스레드"""
@@ -247,16 +392,16 @@ def index():
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🚀 업비트 통합 웹 서비스</title>
+    <title>🤖 업비트 자동거래 시스템</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { 
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
             color: #333;
         }
-        .container { max-width: 1200px; margin: 0 auto; padding: 40px 20px; }
+        .container { max-width: 800px; margin: 0 auto; padding: 40px 20px; }
         .header {
             text-align: center;
             color: white;
@@ -267,12 +412,6 @@ def index():
             margin-bottom: 15px;
             text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
         }
-        .nav-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 30px;
-            margin-bottom: 40px;
-        }
         .nav-card {
             background: white;
             border-radius: 20px;
@@ -282,6 +421,8 @@ def index():
             transition: transform 0.3s ease;
             text-decoration: none;
             color: inherit;
+            display: block;
+            margin-bottom: 30px;
         }
         .nav-card:hover {
             transform: translateY(-10px);
@@ -294,7 +435,7 @@ def index():
             font-size: 1.5em;
             font-weight: bold;
             margin-bottom: 15px;
-            color: #2a5298;
+            color: #764ba2;
         }
         .nav-desc {
             color: #666;
@@ -321,221 +462,37 @@ def index():
 <body>
     <div class="container">
         <div class="header">
-            <h1>🚀 업비트 통합 웹 서비스</h1>
-            <p>실시간 데이터 분석 & 자동거래 시스템</p>
+            <h1>🤖 업비트 자동거래 시스템</h1>
+            <p>완전한 자동매매 솔루션</p>
             <p>Railway 배포 버전 v2.0</p>
         </div>
 
-        <div class="nav-grid">
-            <a href="/charts" class="nav-card">
-                <div class="nav-icon">📊</div>
-                <div class="nav-title">캔들 차트 & 데이터</div>
-                <div class="nav-desc">
-                    실시간 업비트 캔들 데이터 조회<br>
-                    마켓 정보 및 API 테스트 도구
-                </div>
-            </a>
-            
-            <a href="/auto-trading" class="nav-card">
-                <div class="nav-icon">🤖</div>
-                <div class="nav-title">자동거래 시스템</div>
-                <div class="nav-desc">
-                    완전한 자동매매 솔루션<br>
-                    실시간 분석 & 리스크 관리
-                </div>
-            </a>
-        </div>
+        <a href="/auto-trading" class="nav-card">
+            <div class="nav-icon">🤖</div>
+            <div class="nav-title">자동거래 시스템</div>
+            <div class="nav-desc">
+                실시간 자동매매 시스템<br>
+                시뮬레이션 & 실제 거래 지원<br>
+                완전한 리스크 관리
+            </div>
+        </a>
 
         <div class="footer">
-            <h3>🔗 사용 가능한 API</h3>
-            <div class="endpoint">GET /api/status</div>
-            <div class="endpoint">GET /api/candles</div>
-            <div class="endpoint">GET /api/markets</div>
-            <div class="endpoint">POST /api/auto-trading/start</div>
-            <div class="endpoint">GET /api/auto-trading/performance</div>
+            <h3>🔗 시스템 기능</h3>
+            <div class="endpoint">실시간 시장 분석</div>
+            <div class="endpoint">자동 매수/매도</div>
+            <div class="endpoint">손익절매 관리</div>
+            <div class="endpoint">시뮬레이션 모드</div>
+            <div class="endpoint">실제 거래 지원</div>
         </div>
     </div>
-</body>
-</html>
-    '''
-
-@app.route('/charts')
-def charts_page():
-    """캔들 차트 페이지"""
-    return '''
-<!DOCTYPE html>
-<html lang="ko">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>📊 업비트 캔들 차트</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { 
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
-            min-height: 100vh;
-            color: #333;
-        }
-        .container { max-width: 1200px; margin: 0 auto; padding: 40px 20px; }
-        .header {
-            text-align: center;
-            color: white;
-            margin-bottom: 40px;
-        }
-        .panel {
-            background: white;
-            border-radius: 15px;
-            padding: 30px;
-            margin-bottom: 30px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
-        }
-        .form-group {
-            display: inline-block;
-            margin: 10px 15px;
-        }
-        .form-group label {
-            display: block;
-            margin-bottom: 5px;
-            font-weight: bold;
-            color: #4a5568;
-        }
-        .form-group select, .form-group input {
-            padding: 8px 12px;
-            border: 1px solid #ddd;
-            border-radius: 5px;
-            font-size: 14px;
-        }
-        .btn {
-            background: linear-gradient(45deg, #1e3c72, #2a5298);
-            color: white;
-            border: none;
-            padding: 12px 24px;
-            border-radius: 8px;
-            cursor: pointer;
-            font-size: 16px;
-            margin: 10px 5px;
-            transition: all 0.3s ease;
-        }
-        .btn:hover { transform: scale(1.05); }
-        .result {
-            background: #f8f9fa;
-            border: 1px solid #dee2e6;
-            border-radius: 8px;
-            padding: 20px;
-            margin-top: 20px;
-            max-height: 400px;
-            overflow-y: auto;
-        }
-        pre {
-            background: #2d3748;
-            color: #e2e8f0;
-            padding: 15px;
-            border-radius: 8px;
-            overflow-x: auto;
-            font-size: 14px;
-        }
-        .back-link {
-            display: inline-block;
-            color: white;
-            text-decoration: none;
-            padding: 10px 20px;
-            background: rgba(255,255,255,0.2);
-            border-radius: 5px;
-            margin-top: 20px;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>📊 업비트 캔들 차트 데이터</h1>
-            <p>실시간 업비트 API 데이터 조회</p>
-        </div>
-        
-        <div class="panel">
-            <div class="form-group">
-                <label>마켓</label>
-                <select id="market">
-                    <option value="KRW-BTC">KRW-BTC</option>
-                    <option value="KRW-ETH">KRW-ETH</option>
-                    <option value="KRW-XRP">KRW-XRP</option>
-                    <option value="KRW-ADA">KRW-ADA</option>
-                </select>
-            </div>
-            
-            <div class="form-group">
-                <label>캔들 간격</label>
-                <select id="interval">
-                    <option value="1">1분</option>
-                    <option value="3">3분</option>
-                    <option value="5" selected>5분</option>
-                    <option value="15">15분</option>
-                    <option value="30">30분</option>
-                    <option value="60">1시간</option>
-                    <option value="240">4시간</option>
-                </select>
-            </div>
-            
-            <div class="form-group">
-                <label>개수</label>
-                <input type="number" id="count" value="20" min="1" max="200">
-            </div>
-            
-            <div style="margin-top: 20px;">
-                <button class="btn" onclick="testStatus()">📊 상태 확인</button>
-                <button class="btn" onclick="testCandles()">📈 캔들 데이터</button>
-                <button class="btn" onclick="testMarkets()">🏪 마켓 목록</button>
-            </div>
-            
-            <div id="result" class="result">
-                <h4>결과:</h4>
-                <pre id="resultContent">API 버튼을 클릭해보세요.</pre>
-            </div>
-        </div>
-        
-        <a href="/" class="back-link">← 메인 페이지로 돌아가기</a>
-    </div>
-
-    <script>
-        async function apiCall(url, title) {
-            try {
-                const response = await fetch(url);
-                const data = await response.json();
-                document.getElementById('resultContent').textContent = JSON.stringify(data, null, 2);
-            } catch (error) {
-                document.getElementById('resultContent').textContent = 'Error: ' + error.message;
-            }
-        }
-
-        function testStatus() {
-            apiCall('/api/status', '상태 확인');
-        }
-
-        function testMarkets() {
-            apiCall('/api/markets', '마켓 목록');
-        }
-
-        function testCandles() {
-            const market = document.getElementById('market').value;
-            const interval = document.getElementById('interval').value;
-            const count = document.getElementById('count').value;
-            const url = `/api/candles?market=${market}&interval=${interval}&count=${count}`;
-            apiCall(url, '캔들 데이터');
-        }
-
-        // 페이지 로드 시 상태 확인
-        window.onload = function() {
-            testStatus();
-        }
-    </script>
 </body>
 </html>
     '''
 
 @app.route('/auto-trading')
 def auto_trading_dashboard():
-    """자동거래 대시보드 - 완전한 버전"""
+    """자동거래 대시보드"""
     return '''
 <!DOCTYPE html>
 <html lang="ko">
@@ -645,6 +602,8 @@ def auto_trading_dashboard():
             font-weight: bold;
             color: #667eea;
         }
+        .profit-positive { color: #48bb78; }
+        .profit-negative { color: #e53e3e; }
         .analysis-grid {
             display: grid;
             grid-template-columns: repeat(2, 1fr);
@@ -691,7 +650,7 @@ def auto_trading_dashboard():
     <div class="container">
         <div class="header">
             <h1>🤖 업비트 자동거래 시스템 v2.0</h1>
-            <p>Railway 배포 버전 - 완전한 자동매매 솔루션</p>
+            <p>Railway 배포 버전 - 실시간 자동매매 솔루션</p>
         </div>
 
         <div class="dashboard-grid">
@@ -726,16 +685,16 @@ def auto_trading_dashboard():
                         <div>총 거래</div>
                     </div>
                     <div class="performance-item">
-                        <div class="performance-value" id="winRate">0%</div>
-                        <div>승률</div>
+                        <div class="performance-value" id="totalInvestment">0 KRW</div>
+                        <div>총 투자</div>
                     </div>
                     <div class="performance-item">
                         <div class="performance-value" id="totalProfit">0 KRW</div>
                         <div>총 수익</div>
                     </div>
                     <div class="performance-item">
-                        <div class="performance-value" id="currentPosition">없음</div>
-                        <div>현재 포지션</div>
+                        <div class="performance-value" id="profitRate">0%</div>
+                        <div>투자 대비 수익률</div>
                     </div>
                 </div>
             </div>
@@ -762,6 +721,11 @@ def auto_trading_dashboard():
                 <div class="form-group">
                     <label>최대 투자 비율 (%)</label>
                     <input type="number" id="investmentRatio" value="10" min="1" max="50" step="0.1">
+                </div>
+
+                <div class="form-group">
+                    <label>최소 주문금액 (원)</label>
+                    <input type="number" id="minOrderAmount" value="5000" min="5000" max="100000" step="1000">
                 </div>
 
                 <div class="form-group">
@@ -821,6 +785,13 @@ def auto_trading_dashboard():
                 <div style="margin-top: 20px; text-align: center;">
                     <button class="btn" onclick="refreshAnalysis()">🔄 분석 새로고침</button>
                 </div>
+
+                <div style="margin-top: 20px;">
+                    <h4>현재 포지션</h4>
+                    <div id="currentPosition" style="padding: 10px; background: #f8f9fa; border-radius: 5px;">
+                        없음
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -868,6 +839,7 @@ def auto_trading_dashboard():
                 trade_interval: parseInt(document.getElementById('tradeInterval').value) * 60,
                 simulation_mode: document.getElementById('simulationMode').checked,
                 max_investment_ratio: parseFloat(document.getElementById('investmentRatio').value) / 100,
+                min_order_amount: parseInt(document.getElementById('minOrderAmount').value),
                 rsi_oversold: parseInt(document.getElementById('rsiOversold').value),
                 rsi_overbought: parseInt(document.getElementById('rsiOverbought').value),
                 stop_loss_ratio: parseFloat(document.getElementById('stopLoss').value) / 100,
@@ -973,9 +945,38 @@ def auto_trading_dashboard():
                 if (result.success) {
                     const perf = result.performance;
                     document.getElementById('totalTrades').textContent = perf.total_trades;
-                    document.getElementById('winRate').textContent = perf.win_rate.toFixed(1) + '%';
+                    document.getElementById('totalInvestment').textContent = perf.total_investment.toLocaleString() + ' KRW';
                     document.getElementById('totalProfit').textContent = perf.total_profit_krw.toLocaleString() + ' KRW';
-                    document.getElementById('currentPosition').textContent = perf.current_position ? '보유 중' : '없음';
+                    
+                    const profitRateElement = document.getElementById('profitRate');
+                    profitRateElement.textContent = perf.profit_rate.toFixed(2) + '%';
+                    
+                    // 수익률에 따른 색상 변경
+                    if (perf.profit_rate > 0) {
+                        profitRateElement.className = 'performance-value profit-positive';
+                    } else if (perf.profit_rate < 0) {
+                        profitRateElement.className = 'performance-value profit-negative';
+                    } else {
+                        profitRateElement.className = 'performance-value';
+                    }
+                    
+                    // 현재 포지션 정보
+                    const positionElement = document.getElementById('currentPosition');
+                    if (perf.current_position) {
+                        const pos = perf.current_position;
+                        const currentPrice = parseFloat(document.getElementById('currentPrice').textContent.replace(/[^\d.-]/g, ''));
+                        const unrealizedPL = currentPrice ? (currentPrice - pos.buy_price) * pos.amount : 0;
+                        
+                        positionElement.innerHTML = `
+                            <strong>보유 중</strong><br>
+                            매수가: ${pos.buy_price.toLocaleString()} KRW<br>
+                            수량: ${pos.amount.toFixed(8)}<br>
+                            투자금: ${pos.investment.toLocaleString()} KRW<br>
+                            평가손익: ${unrealizedPL.toLocaleString()} KRW
+                        `;
+                    } else {
+                        positionElement.textContent = '없음';
+                    }
                 }
             } catch (error) {
                 console.error('성과 업데이트 실패:', error);
@@ -1021,17 +1022,16 @@ def auto_trading_dashboard():
 
         function startRefreshInterval() {
             refreshInterval = setInterval(() => {
-                if (autoTradingActive) {
-                    refreshAnalysis();
-                    updatePerformance();
-                    refreshLog();
-                }
+                refreshAnalysis();
+                updatePerformance();
+                refreshLog();
             }, 5000);
         }
 
         function stopRefreshInterval() {
             if (refreshInterval) {
                 clearInterval(refreshInterval);
+                refreshInterval = null;
             }
         }
 
@@ -1055,67 +1055,12 @@ def api_status():
     """API 상태 확인"""
     return jsonify({
         'status': 'success',
-        'message': '업비트 통합 웹 서비스가 정상 작동 중입니다.',
+        'message': '업비트 자동거래 시스템이 정상 작동 중입니다.',
         'timestamp': datetime.now().isoformat(),
         'version': '2.0',
-        'services': {
-            'charts': 'active',
-            'auto_trading': 'running' if auto_trading_state['is_running'] else 'stopped'
-        }
+        'api_authenticated': upbit_real_api.is_authenticated(),
+        'auto_trading_status': 'running' if auto_trading_state['is_running'] else 'stopped'
     })
-
-@app.route('/api/candles')
-def get_candles():
-    """캔들 데이터 조회"""
-    try:
-        market = request.args.get('market', 'KRW-BTC')
-        interval = request.args.get('interval', '5')
-        count = int(request.args.get('count', 50))
-        
-        # 파라미터 검증
-        if not market.startswith('KRW-'):
-            return jsonify({'status': 'error', 'message': 'KRW 마켓만 지원됩니다.'}), 400
-        
-        if interval not in ['1', '3', '5', '15', '10', '30', '60', '240']:
-            return jsonify({'status': 'error', 'message': '지원하지 않는 캔들 간격입니다.'}), 400
-        
-        if count < 1 or count > 200:
-            return jsonify({'status': 'error', 'message': '조회 개수는 1~200 사이여야 합니다.'}), 400
-        
-        # 업비트 API에서 데이터 조회
-        candles = upbit_api.get_candle_data(market, interval, count)
-        
-        if candles is None:
-            return jsonify({'status': 'error', 'message': '업비트 API 요청에 실패했습니다.'}), 500
-        
-        return jsonify({
-            'status': 'success',
-            'market': market,
-            'interval': f'{interval}m',
-            'count': len(candles),
-            'data': candles,
-            'updated_at': datetime.now().isoformat()
-        })
-        
-    except ValueError as e:
-        return jsonify({'status': 'error', 'message': f'잘못된 파라미터: {str(e)}'}), 400
-    except Exception as e:
-        logger.error(f"캔들 데이터 API 오류: {e}")
-        return jsonify({'status': 'error', 'message': '서버 내부 오류가 발생했습니다.'}), 500
-
-@app.route('/api/markets')
-def get_markets():
-    """마켓 목록 조회"""
-    try:
-        markets = upbit_api.get_markets()
-        return jsonify({
-            'status': 'success',
-            'count': len(markets),
-            'data': markets
-        })
-    except Exception as e:
-        logger.error(f"마켓 목록 API 오류: {e}")
-        return jsonify({'status': 'error', 'message': '마켓 정보를 가져올 수 없습니다.'}), 500
 
 # ============================================================================
 # 자동거래 API 라우트
@@ -1133,6 +1078,11 @@ def start_auto_trading_api():
         config = request.get_json()
         if config:
             auto_trading_state["config"].update(config)
+        
+        # 실제 거래 모드에서 API 키 확인
+        if not auto_trading_state["config"].get("simulation_mode", True):
+            if not upbit_real_api.is_authenticated():
+                return jsonify({"success": False, "message": "실제 거래를 위해서는 UPBIT_OPEN_API_ACCESS_KEY와 UPBIT_OPEN_API_SECRET_KEY 환경변수가 필요합니다."})
         
         trading_active = True
         auto_trading_state["is_running"] = True
@@ -1157,7 +1107,7 @@ def stop_auto_trading_api():
     try:
         trading_active = False
         auto_trading_state["is_running"] = False
-        add_trading_log("⏹️ 자동거래 중지", "INFO")
+        add_trading_log("⏹️ 자동거래 중지 요청", "INFO")
         
         return jsonify({"success": True, "message": "자동거래가 중지되었습니다."})
     except Exception as e:
@@ -1213,13 +1163,20 @@ if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     debug = os.environ.get('DEBUG', 'False').lower() == 'true'
     
-    print("🚀 업비트 통합 웹 서비스 v2.0 시작")
+    print("🤖 업비트 자동거래 웹 서비스 v2.0 시작")
     print(f"📊 접속 주소: http://localhost:{port}")
     print("🔗 사용 가능한 서비스:")
     print("  - /               : 메인 페이지")
-    print("  - /charts         : 캔들 차트 & 데이터")
     print("  - /auto-trading   : 자동거래 시스템")
     print("  - /api/status     : API 상태 확인")
+    
+    # API 키 상태 확인
+    if upbit_real_api.is_authenticated():
+        print("✅ 업비트 API 키 설정됨 - 실제 거래 가능")
+    else:
+        print("⚠️  업비트 API 키 미설정 - 시뮬레이션 모드만 사용 가능")
+        print("   환경변수 UPBIT_OPEN_API_ACCESS_KEY, UPBIT_OPEN_API_SECRET_KEY 설정 필요")
+    
     print("=" * 50)
     
     # Railway 환경에서 서버 실행
